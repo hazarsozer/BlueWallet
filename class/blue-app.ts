@@ -317,7 +317,17 @@ export class BlueApp {
   async openRealmKeyValue(): Promise<Realm> {
     const service = 'realm_encryption_key';
     let password;
-    const credentials = await Keychain.getGenericPassword({ service });
+    let credentials: false | { password: string };
+    try {
+      credentials = await Keychain.getGenericPassword({ service });
+    } catch (error: any) {
+      if (!String(error?.message ?? error).includes('Could not decrypt data with alias')) throw error;
+      // Keystore key is gone, so the stored entry (and the realm file encrypted with it) is unrecoverable.
+      console.warn('keychain entry for keyvalue realm is unreadable; recreating');
+      await Keychain.resetGenericPassword({ service });
+      await this.purgeRealmKeyValueFile();
+      credentials = false;
+    }
     if (credentials) {
       password = credentials.password;
     } else {
