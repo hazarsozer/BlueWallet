@@ -961,10 +961,11 @@ export class BlueApp {
       write(await this.openRealmKeyValue());
     } catch (error: any) {
       if (isKeychainDecryptError(error)) {
-        // Write path only: the keychain key can't be read, so discard the entry and the file it encrypted and start over.
+        // Write path only: the keychain key can't be read, so discard the file it encrypted and the entry, then start over.
+        // The entry is reset only once the old file is confirmed gone; otherwise keep the key and surface the error.
         console.warn('keychain entry for keyvalue realm is unreadable; recreating');
+        if (!(await this.purgeRealmKeyValueFile())) throw error;
         await Keychain.resetGenericPassword({ service: 'realm_encryption_key' });
-        await this.purgeRealmKeyValueFile();
         write(await this.openRealmKeyValue());
         return;
       }
@@ -975,7 +976,9 @@ export class BlueApp {
     }
   }
 
-  async purgeRealmKeyValueFile(): Promise<void> {
+  /** Deletes the key/value Realm files. Returns true only if the main file is confirmed gone. */
+  async purgeRealmKeyValueFile(): Promise<boolean> {
+    let ok = true;
     const path = this.keyValueRealmPath();
     try {
       if (Realm.exists({ path })) {
@@ -992,8 +995,16 @@ export class BlueApp {
         if (await RNFS.exists(sibling)) await RNFS.unlink(sibling);
       } catch (error: any) {
         console.warn('failed to delete', sibling, error?.message ?? error);
+        ok = false;
       }
     }
+    try {
+      if (Realm.exists({ path }) || (await RNFS.exists(path))) ok = false;
+    } catch (error: any) {
+      console.warn('could not verify keyvalue realm deletion:', error?.message ?? error);
+      ok = false;
+    }
+    return ok;
   }
 
   async moveRealmFilesToCacheDirectory() {
