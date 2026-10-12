@@ -37,6 +37,11 @@ function isRealmDecryptionError(error: unknown): boolean {
   return message.includes('Realm file decryption failed') || message.includes('failed the HMAC check');
 }
 
+function isKeychainDecryptError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return message.includes('Could not decrypt data with alias');
+}
+
 export type TTXMetadata = {
   [txid: string]: {
     memo?: string;
@@ -317,17 +322,8 @@ export class BlueApp {
   async openRealmKeyValue(): Promise<Realm> {
     const service = 'realm_encryption_key';
     let password;
-    let credentials: false | { password: string };
-    try {
-      credentials = await Keychain.getGenericPassword({ service });
-    } catch (error: any) {
-      if (!String(error?.message ?? error).includes('Could not decrypt data with alias')) throw error;
-      // Keystore key is gone, so the stored entry (and the realm file encrypted with it) is unrecoverable.
-      console.warn('keychain entry for keyvalue realm is unreadable; recreating');
-      await Keychain.resetGenericPassword({ service });
-      await this.purgeRealmKeyValueFile();
-      credentials = false;
-    }
+    // Read errors are rethrown untouched: this is also used by the startup read path, which must never delete data.
+    const credentials = await Keychain.getGenericPassword({ service });
     if (credentials) {
       password = credentials.password;
     } else {
@@ -964,6 +960,14 @@ export class BlueApp {
     try {
       write(await this.openRealmKeyValue());
     } catch (error: any) {
+      if (isKeychainDecryptError(error)) {
+        // Write path only: the keychain key can't be read, so discard the entry and the file it encrypted and start over.
+        console.warn('keychain entry for keyvalue realm is unreadable; recreating');
+        await Keychain.resetGenericPassword({ service: 'realm_encryption_key' });
+        await this.purgeRealmKeyValueFile();
+        write(await this.openRealmKeyValue());
+        return;
+      }
       if (!isRealmDecryptionError(error)) throw error;
       console.warn('keyvalue realm decryption failed; recreating backup');
       await this.purgeRealmKeyValueFile();
