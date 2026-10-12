@@ -37,6 +37,11 @@ function isRealmDecryptionError(error: unknown): boolean {
   return message.includes('Realm file decryption failed') || message.includes('failed the HMAC check');
 }
 
+function isKeychainDecryptError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return message.includes('Could not decrypt data with alias');
+}
+
 export type TTXMetadata = {
   [txid: string]: {
     memo?: string;
@@ -317,6 +322,7 @@ export class BlueApp {
   async openRealmKeyValue(): Promise<Realm> {
     const service = 'realm_encryption_key';
     let password;
+    // Read errors are rethrown untouched: this is also used by the startup read path, which must never delete data.
     const credentials = await Keychain.getGenericPassword({ service });
     if (credentials) {
       password = credentials.password;
@@ -954,6 +960,15 @@ export class BlueApp {
     try {
       write(await this.openRealmKeyValue());
     } catch (error: any) {
+      if (isKeychainDecryptError(error)) {
+        // Write path only: the keychain key can't be read, so discard the file it encrypted and the entry, then start over.
+        // The entry is reset only once the old file is confirmed gone; otherwise keep the key and surface the error.
+        console.warn('keychain entry for keyvalue realm is unreadable; recreating');
+        if (!(await this.purgeRealmKeyValueFile())) throw error;
+        await Keychain.resetGenericPassword({ service: 'realm_encryption_key' });
+        write(await this.openRealmKeyValue());
+        return;
+      }
       if (!isRealmDecryptionError(error)) throw error;
       console.warn('keyvalue realm decryption failed; recreating backup');
       await this.purgeRealmKeyValueFile();
@@ -961,7 +976,9 @@ export class BlueApp {
     }
   }
 
-  async purgeRealmKeyValueFile(): Promise<void> {
+  /** Deletes the key/value Realm files. Returns true only if the main file is confirmed gone. */
+  async purgeRealmKeyValueFile(): Promise<boolean> {
+    let ok = true;
     const path = this.keyValueRealmPath();
     try {
       if (Realm.exists({ path })) {
@@ -978,8 +995,16 @@ export class BlueApp {
         if (await RNFS.exists(sibling)) await RNFS.unlink(sibling);
       } catch (error: any) {
         console.warn('failed to delete', sibling, error?.message ?? error);
+        ok = false;
       }
     }
+    try {
+      if (Realm.exists({ path }) || (await RNFS.exists(path))) ok = false;
+    } catch (error: any) {
+      console.warn('could not verify keyvalue realm deletion:', error?.message ?? error);
+      ok = false;
+    }
+    return ok;
   }
 
   async moveRealmFilesToCacheDirectory() {
