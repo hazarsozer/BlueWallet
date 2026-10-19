@@ -90,11 +90,7 @@
             android:name=".SettingsActivity"
             android:label="@string/settings_title"
             android:exported="true"
-            android:theme="@style/Theme.AppCompat.DayNight.DarkActionBar">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-            </intent-filter>
-        </activity>
+            android:theme="@style/Theme.AppCompat.DayNight.DarkActionBar" />
 
         <!-- Settings Activity alias for System Settings -->
         <activity-alias
