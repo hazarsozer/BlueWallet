@@ -425,7 +425,11 @@ export const checkPermissions = async () => {
  */
 export const setLevels = async (levelAll: boolean) => {
   const pushToken = await getPushToken();
-  if (!pushToken || !pushToken.token || !pushToken.os) return;
+  if (!pushToken || !pushToken.token || !pushToken.os) {
+    // Enabling without a token means the device is not subscribed; let the caller know.
+    if (levelAll) throw new Error('No push token available');
+    return;
+  }
 
   try {
     const response = await fetch(`${baseURI}/setTokenConfiguration`, {
@@ -458,6 +462,9 @@ export const setLevels = async (levelAll: boolean) => {
     }
   } catch (error) {
     console.error('Error setting notification levels:', error);
+    // Only surface failures when enabling, so the UI can switch back off. Opting out must keep
+    // its previous (non-throwing) behavior so the caller still records the opt-out flag.
+    if (levelAll) throw error;
   }
 };
 
