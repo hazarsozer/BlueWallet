@@ -65,7 +65,10 @@
     "refill_external": "Refill with External Wallet",
     "refill_lnd_balance": "Refill Lightning Wallet Balance",
     "sameWalletAsInvoiceError": "You cannot pay an invoice with the same wallet used to create it.",
-    "title": "Manage Funds"
+    "title": "Manage Funds",
+    "withdraw": "Withdraw to Bitcoin Address",
+    "withdraw_max": "Maximum you can enter: {amount} (the on-chain network fee is taken from what the recipient receives)",
+    "withdraw_note": "This is an on-chain payment: the recipient gets the amount minus the network fee, and it can take a while to confirm."
   },
   "lndViewInvoice": {
     "additional_info": "Additional Information",
