@@ -51,6 +51,7 @@ const ScanLNDInvoice = () => {
   const [isAmountInitiallyEmpty, setIsAmountInitiallyEmpty] = useState<boolean | undefined>();
   const [expiresIn, setExpiresIn] = useState<string | undefined>();
   const [arkFeesReady, setArkFeesReady] = useState<boolean>(false);
+  const [maxOnchain, setMaxOnchain] = useState<number | undefined>();
   const stylesHook = StyleSheet.create({
     walletWrapLabel: {
       color: colors.buttonAlternativeTextColor,
@@ -102,6 +103,20 @@ const ScanLNDInvoice = () => {
     };
   }, [wallet]);
 
+  const isOnchainWithdraw = wallet instanceof LightningArkWallet && wallet.isOnchainAddress(destination);
+  useEffect(() => {
+    setMaxOnchain(undefined);
+    if (!(wallet instanceof LightningArkWallet) || !isOnchainWithdraw) return;
+    let cancelled = false;
+    wallet
+      .getMaxOnchainWithdrawable()
+      .then(max => !cancelled && setMaxOnchain(max))
+      .catch(() => {}); // informational only; the payment itself still validates the amount
+    return () => {
+      cancelled = true;
+    };
+  }, [wallet, isOnchainWithdraw]);
+
   useFocusEffect(
     useCallback(() => {
       if (!wallet) {
@@ -142,6 +157,17 @@ const ScanLNDInvoice = () => {
           setIsLoading(false);
           return;
         }
+      }
+
+      if (wallet instanceof LightningArkWallet && wallet.isOnchainAddress(data)) {
+        // plain on-chain bitcoin address: Arkade can withdraw to it, the user types the amount
+        setParams({ uri: undefined });
+        // @ts-ignore we need it to be set to something
+        setDecoded({});
+        setIsAmountInitiallyEmpty(true);
+        setDestination(data);
+        setIsLoading(false);
+        return;
       }
 
       let newDecoded: DecodedInvoice;
@@ -267,6 +293,7 @@ const ScanLNDInvoice = () => {
       (text && text.toLowerCase().startsWith('lnb')) ||
       text.toLowerCase().startsWith('lightning:lnb') ||
       text.toLowerCase().startsWith('ark1') ||
+      (wallet instanceof LightningArkWallet && wallet.isOnchainAddress(text)) ||
       Lnurl.isLnurl(text) ||
       Lnurl.isLightningAddress(text)
     ) {
@@ -426,6 +453,16 @@ const ScanLNDInvoice = () => {
                 {decoded !== undefined ? decoded.description : ''}
               </Text>
             </View>
+            {isOnchainWithdraw && (
+              <View>
+                {maxOnchain !== undefined && (
+                  <Text style={stylesHook.expiresIn}>
+                    {loc.formatString(loc.lnd.withdraw_max, { amount: `${maxOnchain} ${BitcoinUnit.SATS}` })}
+                  </Text>
+                )}
+                <Text style={stylesHook.expiresIn}>{loc.lnd.withdraw_note}</Text>
+              </View>
+            )}
             {expiresIn !== undefined && (
               <View>
                 <Text style={stylesHook.expiresIn}>{expiresIn}</Text>

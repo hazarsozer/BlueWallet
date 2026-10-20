@@ -337,6 +337,11 @@ const WalletTransactions: React.FC<WalletTransactionsProps> = ({ route }: { rout
         }
       } else if (id === actionKeys.RefillWithExternalWallet) {
         navigate('ReceiveDetails', { walletID });
+      } else if (id === actionKeys.Withdraw) {
+        navigate('ScanLNDInvoiceRoot', {
+          screen: 'ScanLNDInvoice',
+          params: { walletID },
+        });
       }
     },
     [name, navigate, navigation, onWalletSelect, walletID, wallets],

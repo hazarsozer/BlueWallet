@@ -45,6 +45,8 @@ const TransactionsNavigationHeader: React.FC<TransactionsNavigationHeaderProps> 
   const { colors } = useTheme();
   const { hideBalance } = wallet;
   const isLightningWallet = wallet.type === LightningCustodianWallet.type || wallet.type === LightningArkWallet.type;
+  // only the Arkade wallet can exit funds to an on-chain Bitcoin address
+  const canWithdraw = wallet.type === LightningArkWallet.type;
   const [allowOnchainAddress, setAllowOnchainAddress] = useState(isLightningWallet);
   const { preferredFiatCurrency } = useSettings();
   const { direction } = useLocale();
@@ -130,15 +132,18 @@ const TransactionsNavigationHeader: React.FC<TransactionsNavigationHeaderProps> 
       {
         anchor,
         title: loc.lnd.title,
-        options: [loc._.cancel, loc.lnd.refill, loc.lnd.refill_external],
+        options: canWithdraw
+          ? [loc._.cancel, loc.lnd.refill, loc.lnd.refill_external, loc.lnd.withdraw]
+          : [loc._.cancel, loc.lnd.refill, loc.lnd.refill_external],
         cancelButtonIndex: 0,
       },
       buttonIndex => {
         if (buttonIndex === 1) handleManageFundsPressed(actionKeys.Refill);
         else if (buttonIndex === 2) handleManageFundsPressed(actionKeys.RefillWithExternalWallet);
+        else if (buttonIndex === 3 && canWithdraw) handleManageFundsPressed(actionKeys.Withdraw);
       },
     );
-  }, [handleManageFundsPressed]);
+  }, [handleManageFundsPressed, canWithdraw]);
 
   const currentBalance = wallet ? wallet.getBalance() : 0;
   const formattedBalance = useMemo(() => {
@@ -358,6 +363,7 @@ export const actionKeys = {
   WalletBalanceVisibility: 'walletBalanceVisibility',
   Refill: 'refill',
   RefillWithExternalWallet: 'refillWithExternalWallet',
+  Withdraw: 'withdraw',
 };
 
 export const actionIcons = {

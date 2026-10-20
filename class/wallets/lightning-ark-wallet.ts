@@ -14,7 +14,8 @@ import {
   isSubmarineSwapRefundable,
 } from '@arkade-os/boltz-swap';
 import { RealmSwapRepository } from '@arkade-os/boltz-swap/repositories/realm';
-import { RestDelegatorProvider, SingleKey, Wallet, ExtendedCoin, ArkTransaction, TxType } from '@arkade-os/sdk';
+import { RestDelegatorProvider, SingleKey, Wallet, ExtendedCoin, ArkTransaction, TxType, isBtcAddress, Estimator } from '@arkade-os/sdk';
+import * as bitcoin from 'bitcoinjs-lib';
 import { ExpoArkProvider, ExpoIndexerProvider } from '@arkade-os/sdk/adapters/expo';
 import { RealmContractRepository, RealmWalletRepository } from '@arkade-os/sdk/repositories/realm';
 
@@ -679,6 +680,11 @@ export class LightningArkWallet extends LightningCustodianWallet {
       return;
     }
 
+    if (isBtcAddress(invoice)) {
+      await this._offboardToOnchain(invoice, freeAmount);
+      return;
+    }
+
     assert(this._arkadeSwaps, 'ArkadeSwaps not initialized');
 
     const invoiceDetails = decodeInvoice(invoice);
@@ -693,6 +699,104 @@ export class LightningArkWallet extends LightningCustodianWallet {
       payment_hash: invoiceDetails.paymentHash,
       payment_request: invoice,
     };
+  }
+
+  /**
+   * Picks the spendable vtxos for a collaborative exit. `net` is what they are
+   * worth after the Ark server's input fees (zero fees -> same as the balance).
+   *
+   * This mirrors the SDK's Ramps.offboard step by step (same vtxo set, same
+   * Estimator calls, same dust check) but builds the settle() call here, so the
+   * max shown in the UI and the amount actually sent come from one calculation.
+   */
+  private async _collectOffboardInputs() {
+    const wallet = this._wallet;
+    assert(wallet, 'Arkade wallet not initialized');
+
+    const fees = (await wallet.arkProvider?.getInfo?.())?.fees;
+    const estimator = fees ? new Estimator(fees.intentFee ?? {}) : undefined;
+
+    const vtxos = await wallet.getSpendableVtxos({ withRecoverable: true, withUnrolled: false });
+    const inputs: any[] = [];
+    let gross = 0;
+    let inputFees = 0;
+    for (const vtxo of vtxos) {
+      const inputFee = estimator
+        ? estimator.evalOffchainInput({
+            amount: BigInt(vtxo.value),
+            type: vtxo.isSwept ? 'recoverable' : 'vtxo',
+            weight: 0,
+            birth: vtxo.createdAt,
+            // same expiry the SDK's own Ramps.offboard feeds the estimator (expiresAt, else height * 1000 ms)
+            expiry: vtxo.expiresAt ?? (vtxo.expiresAtHeight !== undefined ? new Date(vtxo.expiresAtHeight * 1e3) : undefined),
+          }).satoshis
+        : 0;
+      if (inputFee >= vtxo.value) continue; // not worth spending
+      inputs.push(vtxo);
+      gross += vtxo.value;
+      inputFees += inputFee;
+    }
+    // if the vtxo values can't be summed, fall back to the wallet's own known balance (same set: available + recoverable)
+    const net = (Number.isFinite(gross) ? gross : this.balance) - inputFees;
+    const dust = 'dustAmount' in wallet ? Number(wallet.dustAmount) : 330;
+    return { wallet, estimator, inputs, net, dust };
+  }
+
+  /**
+   * Largest amount (sats) that can be entered for an on-chain withdrawal: the
+   * balance minus the Ark server's input fees. The on-chain output fee is
+   * still taken out of what the recipient receives.
+   */
+  async getMaxOnchainWithdrawable(): Promise<number> {
+    if (!this._wallet) await this.init();
+    const { net } = await this._collectOffboardInputs();
+    return Number.isFinite(net) ? Math.max(0, net) : 0;
+  }
+
+  /**
+   * Collaborative exit: settle spendable vtxos into a plain on-chain bitcoin
+   * address. `amount` is what leaves the wallet (minus input fees, see
+   * getMaxOnchainWithdrawable); the on-chain output fee, if the server charges
+   * one, is deducted from what the recipient receives. Anything left over goes
+   * back to our own Ark address as change.
+   */
+  private async _offboardToOnchain(address: string, amount: number) {
+    assert(amount > 0, 'Amount is required to send to an on-chain address');
+
+    const { wallet, estimator, inputs, net, dust } = await this._collectOffboardInputs();
+    assert(inputs.length > 0, 'No funds available to send');
+    assert(
+      Number.isFinite(net) && amount <= net,
+      `Insufficient balance. The most you can send is ${net} sat (network fees are deducted from your balance).`,
+    );
+
+    // never leave a dust-sized change output (the server would reject it with an opaque error)
+    const change = net - amount;
+    if (change > 0 && change < dust) {
+      const lower = net - dust;
+      throw new Error(
+        `This amount would leave a remainder of ${change} sat, below the minimum of ${dust} sat. ` +
+          (lower > 0 ? `Send at most ${lower} sat, or the maximum of ${net} sat.` : `Send the maximum of ${net} sat.`),
+      );
+    }
+
+    let sendAmount = amount;
+    if (estimator) {
+      const script = uint8ArrayToHex(bitcoin.address.toOutputScript(address, bitcoin.networks.bitcoin));
+      const outputFee = estimator.evalOnchainOutput({ amount: BigInt(amount), script }).satoshis;
+      assert(outputFee < amount, `Amount is too small to cover the network fee (${outputFee} sat)`);
+      sendAmount -= outputFee;
+    }
+    // the recipient output gets the same dust check as change (the server would reject it opaquely)
+    assert(
+      !(sendAmount < dust),
+      `Amount is too small: the recipient would receive ${sendAmount} sat after fees, below the minimum of ${dust} sat`,
+    );
+
+    const outputs = [{ address, amount: BigInt(sendAmount) }];
+    if (change > 0) outputs.push({ address: await wallet.getAddress(), amount: BigInt(change) });
+
+    await wallet.settle({ inputs, outputs });
   }
 
   /**
@@ -823,6 +927,11 @@ export class LightningArkWallet extends LightningCustodianWallet {
     } finally {
       boardingLock[namespace] = false;
     }
+  }
+
+  /** True for a plain on-chain Bitcoin address (not an Ark address or a Lightning invoice). */
+  isOnchainAddress(address: string): boolean {
+    return isBtcAddress(address);
   }
 
   isAddressValid(address: string): boolean {
